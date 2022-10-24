@@ -8,7 +8,6 @@ import timm.scheduler
 import torch.nn as nn
 from tqdm import tqdm
 import numpy as np
-import global_data
 from torch.utils.data.distributed import DistributedSampler
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP

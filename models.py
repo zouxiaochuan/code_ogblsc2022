@@ -38,7 +38,7 @@ class CateFeatureEmbedding(nn.Module):
         x = x + self.starts
         
         if self.training:
-            x[torch.rand(size=x.shape, device=x.device) < self.dropout_proba] = 0
+            # x[torch.rand(size=x.shape, device=x.device) < self.dropout_proba] = 0
             pass
 
         emb = self.embeddings(x).sum(dim=-2)
@@ -312,6 +312,42 @@ class MoleculePairDistPredictor(nn.Module):
         return dist
         pass
 
+class MoleculePairDistClassifier(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.embed_layer = MoleculeEmbedding(config)
+        # self.layer_output = nn.Sequential(
+        #     nn.Linear(config['hidden_size'], config['hidden_size']),
+        #     nn.Tanh(),
+        #     nn.Linear(config['hidden_size'], config['hidden_size']),
+        # )
+        # self.layer_output = nn.Linear(config['hidden_size'], config['num_dist_class'])
+        self.output_dim = 32
+        self.layer_output_map_left = nn.Linear(config['hidden_size'], self.output_dim * config['num_dist_class'])
+        self.layer_output_map_right = nn.Linear(config['hidden_size'], self.output_dim * config['num_dist_class'])
+        # self.layer_output = nn.Bilinear(4, 4, config['num_dist_class'])
+        
+        pass
+
+    def forward(
+            self, atom_feat_cate, atom_feat_float, atom_mask,
+            bond_index, bond_feat_cate, bond_feat_float, bond_mask,
+            structure_feat_cate, structure_feat_float, triplet_feat_cate):
+
+        hidden_node = self.embed_layer(
+            atom_feat_cate, atom_feat_float, atom_mask,
+            bond_index, bond_feat_cate, bond_feat_float, bond_mask,
+            structure_feat_cate, structure_feat_float, triplet_feat_cate)[0]
+        
+        hidden_node = hidden_node[:, 1:, :]
+        hidden_node_left = self.layer_output_map_left(hidden_node).reshape(hidden_node.shape[0], hidden_node.shape[1], -1, self.output_dim)
+        hidden_node_right = self.layer_output_map_right(hidden_node).reshape(hidden_node.shape[0], hidden_node.shape[1], -1, self.output_dim)
+
+        scores = torch.einsum('blcd,brcd->blrc', hidden_node_left, hidden_node_right)
+
+        dist_cls_scores = scores
+        return dist_cls_scores
+        pass
 
 class MoleculeNet(nn.Module):
     def __init__(self, config):

@@ -8,7 +8,6 @@ import timm.scheduler
 import torch.nn as nn
 from tqdm import tqdm
 import numpy as np
-import global_data
 from torch.utils.data.distributed import DistributedSampler
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -16,10 +15,18 @@ import os
 import torch.distributed as dist
 import sys
 
+input_split = sys.argv[1]
 
-train_split = 'train_valid_fold49'
-test_split = 'train_valid_fold49_test'
-run_id = 'final49_dropout_decay1_0.97_h16s16_hidden256_fastedge_l24'
+train_split = f'train_valid_fold{input_split}'
+test_split = f'train_valid_fold{input_split}_test'
+run_id = f'final{input_split}_dropout_decay1_0.97_h32s32_hidden256_fastedge_l24'
+
+config['num_structure_feat_float'] = 1
+config['learning_rate'] = 1e-4
+config['learning_rate_decay_rate'] = 0.97
+config['num_spread_layers'] = 24
+config['warmup_epochs'] = 5
+
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
@@ -34,9 +41,11 @@ def main(rank, num_processes):
     setup(rank, num_processes)
 
     dataset_train = datasets.SimplePCQM4MDataset(
-        path=config['middle_data_path'], split_name=train_split, rotate=True, path_atom_map=None, data_path_name='data')
+        path=config['middle_data_path'], split_name=train_split, rotate=True, data_path_name='data',
+        use_predict_dist=True, load_dist=True)
     dataset_test = datasets.SimplePCQM4MDataset(
-        path=config['middle_data_path'], split_name=test_split, rotate=False, path_atom_map=None, data_path_name='data')
+        path=config['middle_data_path'], split_name=test_split, rotate=False, data_path_name='data',
+        use_predict_dist=True, load_dist=True)
 
     sampler_train = DistributedSampler(dataset_train, shuffle=True)
     loader_train = torch.utils.data.DataLoader(

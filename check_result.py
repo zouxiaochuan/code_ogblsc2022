@@ -5,11 +5,21 @@ import common_utils
 import cluster_utils
 import pandas as pd
 
-predict_file = 'models_valid/dropout_decay1_0.97_h16_hidden256_fastedge_int8_bondreverse_edgenorm_valid-train/pred_019.npy'
-split = 39
+predict_files = [
+    'models_valid/final0_dropout_decay1_0.97_h32_hidden256_fastedge_inter8_bondreverse_noxyz_l24_cont2/pred_057.npy',
+    'models_valid/final0_dropout_decay1_0.97_h32_hidden256_fastedge_inter8_bondreverse_noxyz_l30/pred_075.npy'
+]
+
+split = 0
 
 if __name__ == '__main__':
-    scores = np.load(predict_file).flatten()
+    scores_list = []
+    for predict_file in predict_files:
+        scores = np.load(predict_file).flatten()
+        scores_list.append(scores)
+        pass
+
+    scores = np.mean(np.stack(scores_list, axis=0), axis=0)
     data_path = os.path.expanduser('~/data/zouxiaochuan/middle_data/pcqm4m/')
     y = pd.read_csv('../ogblsc_data/pcqm4m-v2/raw/data.csv.gz')['homolumogap'].values.flatten()
 

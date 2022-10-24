@@ -16,7 +16,14 @@ import torch.distributed as dist
 import sys
 import torch.cuda
 
-run_id = 'dropout0.1_decay1_0.97_h32s32_hidden256_fastedge_usepredictedgenormcls_ft_train_valid_l24'
+run_id = 'dropout0.1_decay1_0.97_h32s32_hidden256_fastedge_l24'
+
+config['num_structure_feat_float'] = 1
+config['learning_rate'] = 1e-4
+config['learning_rate_decay_rate'] = 0.97
+config['num_spread_layers'] = 24
+config['warmup_epochs'] = 5
+
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
@@ -31,11 +38,9 @@ def main(rank, num_processes):
     setup(rank, num_processes)
 
     dataset_train = datasets.SimplePCQM4MDataset(
-        path=config['middle_data_path'], split_name='train', rotate=True, data_path_name='data',
-        load_dist=True, use_predict_dist=True)
+        path=config['middle_data_path'], split_name='train', rotate=True, data_path_name='data')
     dataset_test = datasets.SimplePCQM4MDataset(
-        path=config['middle_data_path'], split_name='valid', rotate=False, data_path_name='data',
-        load_dist=True, use_predict_dist=True)
+        path=config['middle_data_path'], split_name='valid', rotate=False, data_path_name='data')
 
     if rank == 0:
         print(f'num train: {len(dataset_train)}')

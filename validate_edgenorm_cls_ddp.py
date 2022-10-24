@@ -15,8 +15,9 @@ import os
 import torch.distributed as dist
 import sys
 import torch.cuda
+import torch
 
-run_id = 'dropout0.1_decay1_0.97_h32s32_hidden256_fastedge_usepredictedgenormcls_ft_train_valid_l24'
+run_id = 'dropout0.1_decay1_0.97_h32s32_hidden256_classnorm_lesse_trainf0'
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
@@ -26,16 +27,16 @@ def setup(rank, world_size):
     dist.init_process_group('nccl', rank=rank, world_size=world_size)
     pass
 
+
+
 def main(rank, num_processes):
     
     setup(rank, num_processes)
 
     dataset_train = datasets.SimplePCQM4MDataset(
-        path=config['middle_data_path'], split_name='train', rotate=True, data_path_name='data',
-        load_dist=True, use_predict_dist=True)
+        path=config['middle_data_path'], split_name='train', rotate=True, data_path_name='data2', load_dist=True)
     dataset_test = datasets.SimplePCQM4MDataset(
-        path=config['middle_data_path'], split_name='valid', rotate=False, data_path_name='data',
-        load_dist=True, use_predict_dist=True)
+        path=config['middle_data_path'], split_name='train_valid_fold0_test', rotate=False,  data_path_name='data2', load_dist=True)
 
     if rank == 0:
         print(f'num train: {len(dataset_train)}')
@@ -52,7 +53,7 @@ def main(rank, num_processes):
     )
     loader_test = torch.utils.data.DataLoader(
         dataset_test,
-        batch_size=config['batch_size']//4,
+        batch_size=config['batch_size'],
         num_workers=config['num_data_workers'],
         collate_fn=datasets.collate_fn,
         sampler=DistributedSampler(dataset_test, shuffle=False)
@@ -62,7 +63,7 @@ def main(rank, num_processes):
     torch.cuda.empty_cache()
 
     device = f'cuda:{rank}'
-    model = models.MoleculeHLGapPredictor(config)
+    model = models.MoleculePairDistClassifier(config)
     if rank == 0:
         print('num of parameters: {0}'.format(np.sum([p.numel() for p in model.parameters()])))
         pass
@@ -95,14 +96,15 @@ def main(rank, num_processes):
 
         if rank == 0:
             pbar = tqdm(loader_train)
-            running_loss = None
+            running_stats = dict()
             pass
 
         for ibatch, batch in enumerate(loader_train):
             graph, y = batch
+            # print(type(graph['num_atom']))
             graph = torch_utils.batch_to_device(graph, device)
             y = y.to(device)
-            # print(graph['structure_feat_cate'].shape)
+            # print(graph.keys())
             scores = ddp_model(
                 graph['atom_feat_cate'],
                 graph['atom_feat_float'], 
@@ -115,24 +117,40 @@ def main(rank, num_processes):
                 graph['structure_feat_float'],
                 graph['triplet_feat_cate']
                 # graph
-            )[0]
-            # y = graph['extra_data'].flatten()
-            loss = nn.functional.l1_loss(scores.flatten(), y)
+            )
+
+            dist_class = graph['dist_class']
+            mask = graph['atom_mask'][:, :, None] * graph['atom_mask'][:, None, :]
+            mask = mask * (1 - torch.eye(mask.shape[1], device=mask.device)[None, :, :])
+            mask = mask>0
+            # print(scores.shape)
+            # print(mask.shape)
+            scores = scores[mask, :]
+            label = dist_class[mask, :]
+            # loss = nn.functional.l1_loss(scores, y)
+            loss = nn.functional.binary_cross_entropy_with_logits(scores, label)
+            accuracy = ((scores>0.5).float() == label).float().mean()
+            # accuracy = (scores.argmax(dim=-1) == label).float().mean()
 
             optimizer.zero_grad()
             loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(ddp_model.parameters(), config['max_grad_norm'])
             optimizer.step()
 
             loss = loss.item()
 
             if rank == 0:
-                if running_loss is None:
-                    running_loss = loss
-                else:
-                    running_loss = 0.99 * running_loss + 0.01 * loss
+                stats = {'loss': loss, 'accuracy': accuracy.item(), 'grad_norm': grad_norm.item()}
+
+                for k, v in stats.items():
+                    if k not in running_stats:
+                        running_stats[k] = v
+                        pass
+                    running_stats[k] = 0.99 * running_stats[k] + 0.01 * v
                     pass
 
-                pbar.set_postfix(loss=running_loss, lr=optimizer.param_groups[0]['lr'])
+                running_stats['lr'] = optimizer.param_groups[0]['lr']
+                pbar.set_postfix(**running_stats)
                 pbar.update(1)
                 pass
             pass
@@ -161,19 +179,27 @@ def main(rank, num_processes):
                     graph['structure_feat_float'],
                     graph['triplet_feat_cate']
                     # graph
-                )[0]
-                # y = graph['extra_data'].flatten()
-                loss = nn.functional.l1_loss(scores.flatten(), y, reduction='sum')
+                )
+                dist_class = graph['dist_class']
+                mask = graph['atom_mask'][:, :, None] * graph['atom_mask'][:, None, :]
+                mask = mask * (1 - torch.eye(mask.shape[1], device=mask.device)[None, :, :])
+                mask = mask>0
+                
+                scores = scores[mask, :]
+                label = dist_class[mask, :]
+                # loss = nn.functional.l1_loss(scores, y)
+                loss = nn.functional.binary_cross_entropy_with_logits(scores, label)
                 pass
+
             dist.reduce(loss, 0, op=dist.ReduceOp.SUM)
 
             if rank == 0:
-                losses.append(loss.item())
+                losses.append(loss.item() / num_processes)
                 pass
             pass
         
         if rank == 0:
-            mean_loss = np.sum(losses) / len(dataset_test)
+            mean_loss = np.mean(losses)
             print(f'epoch: {iepoch}, loss: {mean_loss}')
             torch.save(
                 ddp_model.state_dict(),

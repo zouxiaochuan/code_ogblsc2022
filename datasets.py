@@ -4,11 +4,11 @@ import os
 import numpy as np
 import pickle
 from scipy.spatial.transform import Rotation as R
-import global_data
 
 
 class SimplePCQM4MDataset(torch.utils.data.Dataset):
-    def __init__(self, path: str, split_name='train', rotate=False, subset=None, extra_data=None, path_atom_map=None, data_path_name='data2'):
+    def __init__(self, path: str, split_name='train', rotate=False, subset=None, extra_data=None, data_path_name='data',
+                 use_dist=False, use_predict_dist=False, load_dist=False):
         self.path = path
         self.idx_split = common_utils.load_obj(os.path.join(path, 'idx_split.pkl'))
         train_split = self.idx_split['train']
@@ -25,8 +25,19 @@ class SimplePCQM4MDataset(torch.utils.data.Dataset):
             self.idx_split[f'train_valid_fold{i}_test'] = self.idx_split['train_valid'][
                 np.arange(len(self.idx_split['train_valid'])) % 50 == i]
             pass
+
+        self.idx_split['train_ex1'] = self.idx_split['train_valid'][:-len(self.idx_split['train_valid']) // 50]
+        self.idx_split['valid_ex1'] = self.idx_split['train_valid'][-len(self.idx_split['train_valid']) // 50:]
         
         self.data_path = os.path.join(path, data_path_name)
+
+        if load_dist:
+            self.dist_centroids = common_utils.load_obj(os.path.join(path, 'dist_centroids.pkl'))
+            pass
+        self.load_dist = load_dist
+
+        self.use_dist = use_dist
+        self.use_predict_dist = use_predict_dist
 
         self.split = self.idx_split[split_name]
         self.rotate = rotate
@@ -37,12 +48,6 @@ class SimplePCQM4MDataset(torch.utils.data.Dataset):
             self.split = self.split[subset]
             pass
         self.extra_data = extra_data
-        if path_atom_map is not None:
-            self.path_atom_map = common_utils.load_obj(os.path.join(path, path_atom_map))
-            pass
-        else:
-            self.path_atom_map = None
-            pass
         pass
         
     
@@ -109,13 +114,21 @@ class SimplePCQM4MDataset(torch.utils.data.Dataset):
             ).astype('int64')
 
             # print(g['xyz'])
-            shift = g['xyz'][None, :, :] - g['xyz'][:, None, :]
-            dist = np.linalg.norm(shift, axis=-1, keepdims=True)
-            angle = np.divide(shift, dist+1e-12)
-            mid = (g['xyz'][None, :, :] + g['xyz'][:, None, :]) * 0.5
-            # g['structure_feat_float'] = dist
+
             g['structure_feat_float'] = np.zeros((num_atom, num_atom, 1), dtype='float32')
-            # g['atom_feat_float'] = np.concatenate((g['atom_feat_float'], g['xyz']), axis=-1)
+            if self.load_dist:
+                shift = g['xyz'][None, :, :] - g['xyz'][:, None, :]
+                dist = np.linalg.norm(shift, axis=-1)
+                dist_cls = (dist[:, :, None] <= self.dist_centroids[None, None, :]).astype('float32')
+                g['dist_class'] = dist_cls
+                pass
+            if self.use_dist:
+                g['structure_feat_float'] = dist_cls
+            elif self.use_predict_dist:
+                g['structure_feat_float'] = g['predict_pair_dist_cls']
+                pass
+            pass
+
 
             if self.extra_data is not None:
                 g['extra_data'] = self.extra_data[data_idx].astype('float32')
@@ -172,6 +185,11 @@ def collate_fn(graph_list):
     if 'extra_data' in graph_list[0]:
         result_dict['extra_data'] = torch.from_numpy(
             np.stack([g['extra_data'] for g in graph_list]))
+        pass
+
+    if 'dist_class' in graph_list[0]:
+        result_dict['dist_class'] = torch.from_numpy(
+            common_utils.collate_map([g['dist_class'] for g in graph_list]))
         pass
 
     return result_dict, torch.tensor(y, dtype=torch.float32)
